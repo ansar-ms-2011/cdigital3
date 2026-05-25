@@ -1,0 +1,13 @@
+{
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "framework": "vite",
+  "outputDirectory": "./dist/client",
+  "functions": {
+    "api/ssr.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  }
+}
