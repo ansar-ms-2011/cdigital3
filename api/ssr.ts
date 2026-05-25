@@ -1,66 +1,56 @@
-import { VercelRequest, VercelResponse } from '@vercel/node';
+import type { IncomingMessage, ServerResponse } from 'http';
 
-type ServerEntry = {
-  fetch: (request: Request, env?: unknown, ctx?: unknown) => Promise<Response> | Response;
-};
-
-let serverEntryPromise: Promise<ServerEntry> | undefined;
-
-async function getServerEntry(): Promise<ServerEntry> {
-  if (!serverEntryPromise) {
-    try {
-      serverEntryPromise = import('../dist/server/index.js').then(
-        (m) => ((m as { default?: ServerEntry }).default ?? (m as unknown as ServerEntry)),
-      );
-    } catch (error) {
-      console.error('Failed to load server entry:', error);
-      throw error;
-    }
-  }
-  return serverEntryPromise;
-}
-
-export default async (req: VercelRequest, res: VercelResponse) => {
+export default async (req: IncomingMessage & { query?: Record<string, any>; body?: any }, res: ServerResponse) => {
   try {
-    const handler = await getServerEntry();
+    // Import the server handler
+    const serverModule = await import('../dist/server/index.js');
+    const handler = serverModule.default;
+
+    // Create a Web Standard Request from the Node request
+    const protocol = (req.headers['x-forwarded-proto'] as string) || 'https';
+    const host = req.headers.host || 'localhost';
+    const url = new URL(req.url || '/', `${protocol}://${host}`);
     
-    // Convert Vercel request to Web Standard Request
-    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-    
-    const webRequest = new Request(url, {
-      method: req.method,
+    const init: RequestInit = {
+      method: req.method || 'GET',
       headers: Object.entries(req.headers).reduce((acc, [key, value]) => {
-        if (Array.isArray(value)) {
+        if (typeof value === 'string') {
+          acc[key] = value;
+        } else if (Array.isArray(value)) {
           acc[key] = value.join(', ');
-        } else {
-          acc[key] = value as string;
         }
         return acc;
       }, {} as Record<string, string>),
-      body: req.method !== 'GET' && req.method !== 'HEAD' 
-        ? JSON.stringify(req.body)
-        : undefined,
-    });
+    };
+
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      if (req.body) {
+        init.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      }
+    }
+
+    const request = new Request(url, init);
 
     // Call the server handler
-    const response = await handler.fetch(webRequest, undefined, undefined);
+    const response = await handler.fetch(request);
+
+    // Set response status and headers
+    res.statusCode = response.status;
     
-    // Set response headers
     response.headers.forEach((value, key) => {
       res.setHeader(key, value);
     });
 
-    // Set status code
-    res.status(response.status);
-    
-    // Send response body
+    // Send the response body
     const buffer = Buffer.from(await response.arrayBuffer());
-    res.send(buffer);
+    res.end(buffer);
   } catch (error) {
-    console.error('Server error:', error);
-    res.status(500).json({ 
+    console.error('SSR Error:', error);
+    res.statusCode = 500;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ 
       error: 'Internal Server Error',
-      message: error instanceof Error ? error.message : 'Unknown error'
-    });
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }));
   }
 };
